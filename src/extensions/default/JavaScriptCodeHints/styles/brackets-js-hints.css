@@ -21,16 +21,18 @@
  * 
  */
 
+/* Hint colors: green mountain theme */
+
 .brackets-js-hints.priority-high {
-    color: rgb(0, 100, 0); /* green */
+    color: rgb(37, 111, 25); /* green - close mountain */
 }
 
 .brackets-js-hints.priority-medium {
-    color: rgb(125, 125, 0); /* yellow */
+    color: rgb(33, 88, 153); /* blue - further away mountain */
 }
 
 .brackets-js-hints.priority-low {
-    color: rgb(0, 0, 100); /* blue */
+    color: rgb(71, 19, 97);  /* purple - furthest away mountain */
 }
 
 .brackets-js-hints.priority-lowest {
