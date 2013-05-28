@@ -31,9 +31,9 @@
 /*jslint vars: true, plusplus: true, devel: true, nomen: true, indent: 4, maxerr: 50 */
 /*global define, brackets, $, Worker */
 
+
 define(function (require, exports, module) {
     "use strict";
-
     var DocumentManager     = brackets.getModule("document/DocumentManager"),
         LanguageManager     = brackets.getModule("language/LanguageManager"),
         NativeFileSystem    = brackets.getModule("file/NativeFileSystem").NativeFileSystem,
@@ -43,8 +43,9 @@ define(function (require, exports, module) {
         FileUtils           = brackets.getModule("file/FileUtils"),
         FileIndexManager    = brackets.getModule("project/FileIndexManager"),
         HintUtils           = require("HintUtils"),
-        MessageIds          = require("MessageIds");
-    
+        MessageIds          = require("MessageIds"),
+        Tern                = require("thirdparty/tern/lib/tern");
+
     var ternEnvironment     = [],
         pendingTernRequests = {},
         builtinFiles       = ["ecma5.json", "browser.json", "jquery.json"],
@@ -70,6 +71,186 @@ define(function (require, exports, module) {
     var MAX_TEXT_LENGTH     = 1000000, // about 1MB
         MAX_FILES_IN_DIR    = 100,
         MAX_FILES_IN_PROJECT = 100;
+
+    var ternServer  = null;
+
+    // Save the tern callbacks for when we get the contents of the file
+    var fileCallBacks = {};
+
+    var busy = false;
+
+    //var msgQueue = [];
+
+    /**
+     * Provide the contents of the requested file to tern
+     * @param {string} name - the name of the file
+     * @param {Function} next - the function to call with the text of the file
+     *  once it has been read in.
+     */
+    function getFile(name, next) {
+        _log("getFile: " + name);
+        if (busy) {
+            _log("getFile: already busy");
+        }
+        busy = true;
+        // save the callback
+        fileCallBacks[name] = next;
+
+        // post a message back to the main thread to get the file contents
+        self.postMessage({
+            type: MessageIds.TERN_GET_FILE_MSG,
+            file: name
+        });
+    }
+
+    /**
+     * Create a new tern server.
+     *
+     * @param {Object} env - an Object with the environment, as read in from
+     *  the json files in thirdparty/tern/defs
+     * @param {string} dir - the current directory
+     * @param {Array.<string>} files - a list of filenames tern should be aware of
+     */
+    function _initTernServer(env, dir, files, text) {
+        var ternOptions = {
+            defs: env,
+            async: true,
+            getFile: getFile,
+            plugins: {requirejs: {}/*, doc_comment: true*/}
+        };
+        ternServer = new Tern.Server(ternOptions);
+
+        files.forEach(function (file) {
+            _log("initTernServer: add " + file);
+            ternServer.addFile(file, text);
+        });
+
+    }
+
+    /**
+     * Build an object that can be used as a request to tern
+     * @param {string} dir - the current directory
+     * @param {string} file - the filename the request is in
+     * @param {string} query - the type of request being made
+     * @param {number} offset - the offset in the file the request is at
+     * @param {string} text - the text of the file
+     */
+    function buildRequest(dir, file, query, offset, text) {
+        query = {type: query};
+        query.start = offset;
+        query.end = offset;
+        query.file = file;
+        query.filter = false;
+        query.sort = false;
+        query.depths = true;
+        query.guess = true;
+        query.origins = true;
+        query.expandWordForward = false;
+
+        var request = {query: query, files: [], offset: offset};
+        request.files.push({type: "full", name: file, text: text});
+
+        return request;
+    }
+
+    /**
+     * Send a log message back from the worker to the main thread
+     *
+     * @param {string} msg - the log message
+     */
+    function _log(msg) {
+        console.log(msg);
+    }
+
+
+    /**
+     * Get all the known properties for guessing.
+     *
+     * @param {string} dir      - the directory
+     * @param {string} file     - the file name
+     * @param {number} offset   - the offset into the file where we want completions for
+     * @param {string} text     - the text of the file
+     * @param {string} type     - the type of the message to reply with.
+     */
+    function getTernProperties(dir, file, offset, text, type) {
+        if (busy) {
+            _log("getTernProperties: already busy");
+        }
+        busy = true;
+
+        var request = buildRequest(dir, file, "properties", undefined, text),
+            i;
+        //_log("tern properties: request " + request.type + dir + " " + file);
+        ternServer.request(request, function (error, data) {
+            var properties = [];
+            if (error) {
+                _log("Error returned from Tern 'properties' request: " + error);
+            } else {
+                //_log("tern properties: completions = " + data.completions.length);
+                for (i = 0; i < data.completions.length; ++i) {
+                    var property = data.completions[i];
+                    properties.push({value: property, guess: true});
+                }
+            }
+
+            // Post a message back to the main thread with the completions
+            self.postMessage({type: type,
+                dir: dir,
+                file: file,
+                offset: offset,
+                properties: properties
+            });
+            busy = false;
+        });
+    }
+
+    /**
+     * Get the completions for the given offset
+     * @param {string} dir      - the directory
+     * @param {string} file     - the file name
+     * @param {number} offset   - the offset into the file where we want completions for
+     * @param {string} text     - the text of the file
+     * @param {boolean} isProperty - true if getting a property hint,
+     * otherwise getting an identifier hint.
+     */
+    function _getTernHints(dir, file, offset, text, isProperty) {
+        if (busy) {
+            _log("getTernHints: already busy");
+        }
+        busy = true;
+
+        var request = buildRequest(dir, file, "completions", offset, text),
+            i;
+
+        //_log("request " + dir + " " + file + " " + offset /*+ " " + text */);
+        ternServer.request(request, function (error, data) {
+            var completions = [];
+            if (error) {
+                _log("Error returned from Tern 'completions' request: " + error);
+            } else {
+                //_log("found " + data.completions.length + " for " + file + "@" + offset);
+                for (i = 0; i < data.completions.length; ++i) {
+                    var completion = data.completions[i];
+                    completions.push({value: completion.name, type: completion.type, depth: completion.depth,
+                        guess: completion.guess, origin: completion.origin});
+                }
+            }
+
+            if (completions.length > 0 || !isProperty) {
+                // Post a message back to the main thread with the completions
+                handleTernCompletions({type: MessageIds.TERN_COMPLETIONS_MSG,
+                    dir: dir,
+                    file: file,
+                    offset: offset,
+                    completions: completions
+                });
+            } else {
+                // if there are no completions, then get all the properties
+                getTernProperties(dir, file, offset, text, MessageIds.TERN_COMPLETIONS_MSG);
+            }
+            busy = false;
+        });
+    }
 
     /**
      * Create a new tern server.
@@ -479,16 +660,18 @@ define(function (require, exports, module) {
      *      it is done
      */
     function getTernHints(dir, file, offset, text, isProperty) {
-        postMessage({
-            type: MessageIds.TERN_COMPLETIONS_MSG,
-            dir: dir,
-            file: file,
-            offset: offset,
-            text: text,
-            isProperty: isProperty
-        });
-        
-        return addPendingRequest(file, offset, MessageIds.TERN_COMPLETIONS_MSG);
+//        postMessage({
+//            type: MessageIds.TERN_COMPLETIONS_MSG,
+//            dir: dir,
+//            file: file,
+//            offset: offset,
+//            text: text,
+//            isProperty: isProperty
+//        });
+//
+        var promise = addPendingRequest(file, offset, MessageIds.TERN_COMPLETIONS_MSG);
+        _getTernHints(dir, file, offset, text, isProperty);
+        return promise;
     }
 
     /**
@@ -801,6 +984,81 @@ define(function (require, exports, module) {
     }
 
     /**
+<<<<<<< Updated upstream
+=======
+     * Init the web worker that does all the code hinting work.
+     *
+     * If a worker already exists, then this will terminate that worker and
+     * start a new worker - this helps alleviate leaks that may be ocurring in 
+     * the code that the worker runs.  
+     */
+    function initTernWorker() {
+//        if (_ternWorker) {
+//            _ternWorker.terminate();
+//        }
+        if (!_ternWorker) {
+            var workerDeferred = $.Deferred();
+            ternPromise = workerDeferred.promise();
+            var path = ExtensionUtils.getModulePath(module, "tern-worker.js");
+//            _ternWorker = new Worker(path);
+//
+//            _ternWorker.addEventListener("message", function (e) {
+//                var response = e.data,
+//                    type = response.type;
+//
+//                if (type === MessageIds.TERN_COMPLETIONS_MSG ||
+//                    type === MessageIds.TERN_CALLED_FUNC_TYPE_MSG) {
+//                    // handle any completions the worker calculated
+//                    handleTernCompletions(response);
+//                } else if (type === MessageIds.TERN_GET_FILE_MSG) {
+//                    // handle a request for the contents of a file
+//                    handleTernGetFile(response);
+//                } else if (type === MessageIds.TERN_JUMPTODEF_MSG) {
+//                    handleJumptoDef(response);
+//                } else if (type === MessageIds.TERN_PRIME_PUMP_MSG) {
+//                    handlePrimePumpCompletion(response);
+//                } else if (type === MessageIds.TERN_GET_GUESSES_MSG) {
+//                    handleGetGuesses(response);
+//                } else if (type === MessageIds.TERN_UPDATE_FILE_MSG) {
+//                    handleUpdateFile(response);
+//                } else if (type === MessageIds.TERN_WORKER_READY) {
+//                    workerDeferred.resolveWith(null, [_ternWorker]);
+//                } else {
+//                    console.log("Worker: " + (response.log || response));
+//                }
+//            });
+
+              workerDeferred.resolveWith(null, [_ternWorker]);
+
+        }
+
+    }
+    /**
+     * Create a new tern server.
+     */
+    function initTernServer(dir, files, text) {
+        initTernWorker();
+        numResolvedFiles = 0;
+        numAddedFiles = 0;
+        stopAddingFiles = false;
+        numInitialFiles = files.length;
+
+        _initTernServer(ternEnvironment, dir, files, text);
+
+//        ternPromise.done(function (worker) {
+//            worker.postMessage({
+//                type        : MessageIds.TERN_INIT_MSG,
+//                dir         : dir,
+//                files       : files,
+//                text        : text,
+//                env         : ternEnvironment
+//            });
+//        });
+        rootTernDir = dir + "/";
+    }
+
+    /**
+>>>>>>> Stashed changes
      *  We can skip tern initialization if we are opening a file that has
      *  already been added to tern.
      *
@@ -862,9 +1120,14 @@ define(function (require, exports, module) {
 
         projectRoot = pr;
         getFilesInDirectory(dir, function (files) {
+<<<<<<< Updated upstream
             initTernServer(dir, files);
             ternDeferred.resolveWith(null, [_ternWorker]);
+=======
+            initTernServer(dir, files, document.getText());
+>>>>>>> Stashed changes
 
+            shouldPrimePump = false;
             if (shouldPrimePump) {
                 var hintsPromise = primePump(path, document.getText());
                 hintsPromise.done(function () {
@@ -930,6 +1193,7 @@ define(function (require, exports, module) {
         isDocumentDirty = true;
     }
 
+<<<<<<< Updated upstream
     _ternWorker.addEventListener("message", function (e) {
         var response = e.data,
             type = response.type;
@@ -953,6 +1217,32 @@ define(function (require, exports, module) {
             console.log("Worker: " + (response.log || response));
         }
     });
+=======
+    /**
+     * Do some cleanup when a project is closed.
+     *
+     * We can clean up the web worker we use to calculate hints now, since
+     * we know we will need to re-init it in any new project that is opened.  
+     */
+    function handleProjectClose() {
+//        function terminateWorker() {
+//            _ternWorker.terminate();
+//            _ternWorker = null;
+//            resolvedFiles = {};
+//        }
+//
+//        if (_ternWorker) {
+//            if (addFilesPromise) {
+//                // If we're in the middle of added files, don't terminate
+//                // until we're done or we might get NPEs
+//                addFilesPromise.done(terminateWorker).fail(terminateWorker);
+//            } else {
+//                terminateWorker();
+//            }
+//        }
+    }
+>>>>>>> Stashed changes
+
 
     exports.getBuiltins = getBuiltins;
     exports.getResolvedPath = getResolvedPath;

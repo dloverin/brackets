@@ -24,8 +24,11 @@
 /*jslint vars: true, plusplus: true, devel: true, nomen: true, indent: 4, maxerr: 50, regexp: true */
 /*global self, importScripts, require */
 
-importScripts("thirdparty/requirejs/require.js");
+importScripts("./thirdparty/acorn/acorn.js", "./thirdparty/acorn/acorn_loose.js", "./thirdparty/acorn/util/walk.js",
+    "./thirdparty/tern/lib/signal.js", "./thirdparty/tern/lib/tern.js", "./thirdparty/tern/lib/def.js", "./thirdparty/tern/lib/infer.js",
+    "./thirdparty/tern/plugin/requirejs.js", "./thirdparty/tern/plugin/doc_comment.js");
 
+<<<<<<< Updated upstream
 (function () {
     "use strict";
     
@@ -53,6 +56,87 @@ importScripts("thirdparty/requirejs/require.js");
     function getFile(name, next) {
         // save the callback
         fileCallBacks[name] = next;
+=======
+var TERN_ADD_FILES_MSG          = "AddFiles",
+    TERN_UPDATE_FILE_MSG        = "UpdateFile",
+    TERN_INIT_MSG               = "Init",
+    TERN_JUMPTODEF_MSG          = "JumptoDef",
+    TERN_COMPLETIONS_MSG        = "Completions",
+    TERN_GET_FILE_MSG           = "GetFile",
+    TERN_CALLED_FUNC_TYPE_MSG   = "FunctionType",
+    TERN_PRIME_PUMP_MSG         = "PrimePump",
+    TERN_GET_GUESSES_MSG        = "GetGuesses",
+    TERN_WORKER_READY           = "WorkerReady";
+
+            var ternServer  = null;
+        
+            // Save the tern callbacks for when we get the contents of the file
+            var fileCallBacks = {};
+
+            var busy = false;
+
+            //var msgQueue = [];
+
+            /**
+             * Provide the contents of the requested file to tern
+             * @param {string} name - the name of the file
+             * @param {Function} next - the function to call with the text of the file
+             *  once it has been read in.
+             */
+            function getFile(name, next) {
+                _log("getFile: " + name);
+                if (busy) {
+                    _log("getFile: already busy");
+                }
+                busy = true;
+                // save the callback
+                fileCallBacks[name] = next;
+                
+                // post a message back to the main thread to get the file contents 
+                self.postMessage({
+                    type: TERN_GET_FILE_MSG,
+                    file: name
+                });
+            }
+        
+            /**
+             * Handle a response from the main thread providing the contents of a file
+             * @param {string} file - the name of the file
+             * @param {string} text - the contents of the file
+             */
+            function handleGetFile(file, text) {
+                var next = fileCallBacks[file];
+                if (next) {
+                    next(null, text);
+                }
+                delete fileCallBacks[file];
+                busy = false;
+            }
+            
+            /**
+             * Create a new tern server.
+             *
+             * @param {Object} env - an Object with the environment, as read in from
+             *  the json files in thirdparty/tern/defs
+             * @param {string} dir - the current directory
+             * @param {Array.<string>} files - a list of filenames tern should be aware of
+             */
+            function initTernServer(env, dir, files, text) {
+                var ternOptions = {
+                    defs: env,
+                    async: true,
+                    getFile: getFile,
+                    plugins: {requirejs: {}/*, doc_comment: true*/}
+                };
+                ternServer = new tern.Server(ternOptions);
+                
+                files.forEach(function (file) {
+                    _log("initTernServer: add " + file);
+                    ternServer.addFile(file, text);
+                });
+                
+            }
+>>>>>>> Stashed changes
         
         // post a message back to the main thread to get the file contents 
         self.postMessage({
@@ -151,6 +235,7 @@ importScripts("thirdparty/requirejs/require.js");
                 return;
             }
             
+<<<<<<< Updated upstream
             // Post a message back to the main thread with the definition
             self.postMessage({type: MessageIds.TERN_JUMPTODEF_MSG,
                               file: file,
@@ -194,10 +279,134 @@ importScripts("thirdparty/requirejs/require.js");
                               file: file,
                               offset: offset,
                               properties: properties
+=======
+            /**
+             * Get definition location
+             * @param {string} dir      - the directory
+             * @param {string} file     - the file name
+             * @param {number} offset   - the offset into the file for cursor
+             * @param {string} text     - the text of the file
+             */
+            function getJumptoDef(dir, file, offset, text) {
+                if (busy) {
+                    _log("getJumpToDef: already busy");
+                }
+                busy = true;
+
+                var request = buildRequest(dir, file, "definition", offset, text);
+                request.query.lineCharPositions = true;
+                // request.query.typeOnly = true;       // FIXME: tern doesn't work exactly right yet.
+                ternServer.request(request, function (error, data) {
+                    if (error) {
+                        _log("Error returned from Tern 'definition' request: " + error);
+                        self.postMessage({type: TERN_JUMPTODEF_MSG});
+                        return;
+                    }
+                    
+                    // Post a message back to the main thread with the definition
+                    self.postMessage({type: TERN_JUMPTODEF_MSG,
+                                      file: file,
+                                      resultFile: data.file,
+                                      offset: offset,
+                                      start: data.start,
+                                      end: data.end
+                                     });
+                    busy = false;
+                });
+            }
+        
+            /**
+             * Get all the known properties for guessing.
+             *
+             * @param {string} dir      - the directory
+             * @param {string} file     - the file name
+             * @param {number} offset   - the offset into the file where we want completions for
+             * @param {string} text     - the text of the file
+             * @param {string} type     - the type of the message to reply with.
+             */
+            function getTernProperties(dir, file, offset, text, type) {
+                if (busy) {
+                    _log("getTernProperties: already busy");
+                }
+                busy = true;
+
+                var request = buildRequest(dir, file, "properties", undefined, text),
+                    i;
+                //_log("tern properties: request " + request.type + dir + " " + file);
+                ternServer.request(request, function (error, data) {
+                    var properties = [];
+                    if (error) {
+                        _log("Error returned from Tern 'properties' request: " + error);
+                    } else {
+                        //_log("tern properties: completions = " + data.completions.length);
+                        for (i = 0; i < data.completions.length; ++i) {
+                            var property = data.completions[i];
+                            properties.push({value: property, guess: true});
+                        }
+                    }
+        
+                    // Post a message back to the main thread with the completions
+                    self.postMessage({type: type,
+                                      dir: dir,
+                                      file: file,
+                                      offset: offset,
+                                      properties: properties
+                        });
+                    busy = false;
+                });
+            }
+                
+            /**
+             * Get the completions for the given offset
+             * @param {string} dir      - the directory
+             * @param {string} file     - the file name
+             * @param {number} offset   - the offset into the file where we want completions for
+             * @param {string} text     - the text of the file
+             * @param {boolean} isProperty - true if getting a property hint,
+             * otherwise getting an identifier hint.
+             */
+            function getTernHints(dir, file, offset, text, isProperty) {
+                if (busy) {
+                    _log("getTernHints: already busy");
+                }
+                busy = true;
+
+                var request = buildRequest(dir, file, "completions", offset, text),
+                    i;
+        
+                //_log("request " + dir + " " + file + " " + offset /*+ " " + text */);
+                ternServer.request(request, function (error, data) {
+                    var completions = [];
+                    if (error) {
+                        _log("Error returned from Tern 'completions' request: " + error);
+                    } else {
+                        //_log("found " + data.completions.length + " for " + file + "@" + offset);
+                        for (i = 0; i < data.completions.length; ++i) {
+                            var completion = data.completions[i];
+                            completions.push({value: completion.name, type: completion.type, depth: completion.depth,
+                                guess: completion.guess, origin: completion.origin});
+                        }
+                    }
+        
+                    if (completions.length > 0 || !isProperty) {
+                        // Post a message back to the main thread with the completions
+                        self.postMessage({type: TERN_COMPLETIONS_MSG,
+                            dir: dir,
+                            file: file,
+                            offset: offset,
+                            completions: completions
+                            });
+                    } else {
+                        // if there are no completions, then get all the properties
+                        getTernProperties(dir, file, offset, text, TERN_COMPLETIONS_MSG);
+                    }
+                    busy = false;
+>>>>>>> Stashed changes
                 });
         });
     }
         
+<<<<<<< Updated upstream
     /**
      * Get the completions for the given offset
      * @param {string} dir      - the directory
@@ -237,6 +446,84 @@ importScripts("thirdparty/requirejs/require.js");
             } else {
                 // if there are no completions, then get all the properties
                 getTernProperties(dir, file, offset, text, MessageIds.TERN_COMPLETIONS_MSG);
+=======
+            /**
+             * Get the function type for the given offset
+             * @param {string} dir      - the directory
+             * @param {string} file     - the file name
+             * @param {number} offset   - the offset into the file where we want completions for
+             * @param {string} text     - the text of the file
+             */
+            function handleFunctionType(dir, file, pos, offset, text) {
+                if (busy) {
+                    _log("handleFunctionType: already busy");
+                }
+                busy = true;
+
+                var request = buildRequest(dir, file, "type", pos, text);
+                    
+                request.preferFunction = true;
+                
+                //_log("request " + dir + " " + file + " " + offset /*+ " " + text */);
+                ternServer.request(request, function (error, data) {
+                    var fnType = "";
+                    if (error) {
+                        _log("Error returned from Tern 'type' request: " + error);
+                    } else {
+                        fnType = data.type;
+                    }
+        
+                    // Post a message back to the main thread with the completions
+                    self.postMessage({type: TERN_CALLED_FUNC_TYPE_MSG,
+                                      dir: dir,
+                                      file: file,
+                                      offset: offset,
+                                      fnType: fnType
+                                     });
+                    busy = false;
+                });
+            }
+        
+            /**
+             *  Add an array of files to tern.
+             *
+             * @param {Array.<string>} files - each string in the array is the full
+             * path of a file.
+             */
+            function handleAddFiles(files) {
+                if (busy) {
+                    _log("handleAddFiles: already busy");
+                }
+                busy = true;
+                files.forEach(function (file) {
+                    _log("handleAddFile: " + file);
+                    ternServer.addFile(file);
+                });
+                busy = false;
+            }
+        
+            /**
+             *  Update the context of a file in tern.
+             *
+             * @param {string} path - full path of file.
+             * @param {string} text - content of the file.
+             */
+            function handleUpdateFile(path, text) {
+
+                if (busy) {
+                    _log("handleUpdateFile: already busy");
+                }
+                busy = true;
+                ternServer.addFile(path, text);
+        
+                self.postMessage({type: TERN_UPDATE_FILE_MSG,
+                    path: path
+                    });
+        
+                // reset to get the best hints with the updated file.
+                ternServer.reset();
+                busy = false;
+>>>>>>> Stashed changes
             }
         });
     }
@@ -250,6 +537,7 @@ importScripts("thirdparty/requirejs/require.js");
      */
     function handleFunctionType(dir, file, pos, offset, text) {
         
+<<<<<<< Updated upstream
         var request = buildRequest(dir, file, "type", pos, text);
             
         request.preferFunction = true;
@@ -372,3 +660,91 @@ importScripts("thirdparty/requirejs/require.js");
     });
 
 }());
+=======
+            /**
+             *  Make a completions request to tern to force tern to resolve files
+             *  and create a fast first lookup for the user.
+             * @param {string} path     - the path of the file
+             * @param {string} text     - the text of the file
+             */
+            function handlePrimePump(path, text) {
+                if (busy) {
+                    _log("handlePrimePump: already busy");
+                }
+                busy = true;
+                var request = buildRequest("", path, "completions", 0, text);
+        
+                ternServer.request(request, function (error, data) {
+                    // Post a message back to the main thread
+                    self.postMessage({type: TERN_PRIME_PUMP_MSG,
+                        path: path
+                        });
+                    busy = false;
+                });
+            }
+            
+            self.addEventListener("message", function (e) {
+                var dir, file, text, offset,
+                    request = e.data,
+                    type = request.type;
+
+                _log("begin request: " + request.type);
+                //msgQueue.push(request);
+
+                if (type === TERN_INIT_MSG) {
+                    
+                    dir         = request.dir;
+                    var env     = request.env,
+                        files   = request.files;
+                    initTernServer(env, dir, files, request.text);
+                } else if (type === TERN_COMPLETIONS_MSG) {
+                    dir = request.dir;
+                    file = request.file;
+                    text    = request.text;
+                    offset  = request.offset;
+                    getTernHints(dir, file, offset, text, request.isProperty);
+                } else if (type === TERN_GET_FILE_MSG) {
+                    file = request.file;
+                    text = request.text;
+                    handleGetFile(file, text);
+                } else if (type === TERN_CALLED_FUNC_TYPE_MSG) {
+                    dir     = request.dir;
+                    file    = request.file;
+                    text    = request.text;
+                    offset  = request.offset;
+                    var pos = request.pos;
+                    handleFunctionType(dir, file, pos, offset, text);
+                } else if (type === TERN_JUMPTODEF_MSG) {
+                    file    = request.file;
+                    dir     = request.dir;
+                    text    = request.text;
+                    offset  = request.offset;
+                    getJumptoDef(dir, file, offset, text);
+                } else if (type === TERN_ADD_FILES_MSG) {
+                    handleAddFiles(request.files);
+                } else if (type === TERN_PRIME_PUMP_MSG) {
+                    handlePrimePump(request.path, request.text);
+                } else if (type === TERN_GET_GUESSES_MSG) {
+                    dir     = request.dir;
+                    file    = request.file;
+                    text    = request.text;
+                    offset  = request.offset;
+                    getTernProperties(dir, file, offset, text, TERN_GET_GUESSES_MSG);
+                } else if (type === TERN_UPDATE_FILE_MSG) {
+                    handleUpdateFile(request.path, request.text);
+                } else {
+                    _log("Unknown message: " + JSON.stringify(request));
+                }
+
+//                var index = msgQueue.indexOf(request);
+//                if (index === -1) {
+//                    _log("did not find request " + request.type);
+//                }
+//
+//                _log("end request: " + msgQueue[index].type);
+//
+//                msgQueue = msgQueue.splice(index, 1);
+            });
+            // tell the main thread we're ready to start processing messages
+            self.postMessage({type: TERN_WORKER_READY});
+>>>>>>> Stashed changes

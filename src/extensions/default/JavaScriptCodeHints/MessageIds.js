@@ -46,6 +46,7 @@ define(function (require, exports, module) {
     exports.TERN_PRIME_PUMP_MSG         = TERN_PRIME_PUMP_MSG;
     exports.TERN_GET_GUESSES_MSG        = TERN_GET_GUESSES_MSG;
     exports.TERN_UPDATE_FILE_MSG        = TERN_UPDATE_FILE_MSG;
+    exports.TERN_WORKER_READY           = TERN_WORKER_READY;
 });
 
 
